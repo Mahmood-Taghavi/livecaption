@@ -7,7 +7,7 @@ Extract text produced by Windows 11 Live Captions and bring it into ordinary R
 objects for further processing, analysis, transformation, and export.
 }
 \details{
-Version 0.1.3 provides application controls, in-memory caption bookmarks,
+Version 0.1.4 provides application controls, in-memory caption bookmarks,
 overlap-aware text extraction between bookmarks, and clipboard export. The
 resulting character strings and data frames can be used with normal R tools or
 saved for other applications. Continuous capture, recording, subtitle

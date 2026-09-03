@@ -1,3 +1,9 @@
+# livecaption 0.1.4
+
+- Removed the process-level PowerShell `ExecutionPolicy Bypass` setting.
+- PowerShell scripts now inherit the effective Windows execution policy,
+  including policies configured by an organization.
+
 # livecaption 0.1.3
 
 - Re-established `lc_app_start()` and `lc_app_stop()` as the only application

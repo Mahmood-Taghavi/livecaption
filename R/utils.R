@@ -1,0 +1,364 @@
+.lc_run_powershell <- function(code, timeout = 8) {
+  .lc_assert_windows()
+
+  script <- tempfile("livecaption_", fileext = ".ps1")
+  on.exit(unlink(script, force = TRUE), add = TRUE)
+  writeLines(enc2utf8(code), script, useBytes = TRUE)
+
+  result <- processx::run(
+    command = "powershell.exe",
+    args = c(
+      "-NoLogo", "-NoProfile", "-NonInteractive",
+      "-File", script
+    ),
+    error_on_status = FALSE,
+    timeout = max(1, as.numeric(timeout)) * 1000,
+    windows_hide_window = TRUE,
+    encoding = "UTF-8",
+    echo = FALSE
+  )
+
+  if (!isTRUE(result$status == 0L)) {
+    detail <- trimws(paste(result$stderr, result$stdout))
+    if (!nzchar(detail)) detail <- paste("PowerShell exited with status", result$status)
+    stop(detail, call. = FALSE)
+  }
+
+  result
+}
+
+.lc_parse_json_output <- function(result) {
+  text <- trimws(result$stdout)
+  if (!nzchar(text)) stop("PowerShell returned no result.", call. = FALSE)
+
+  tryCatch(
+    jsonlite::fromJSON(text, simplifyVector = TRUE),
+    error = function(e) {
+      stop("Could not parse the Windows response: ", conditionMessage(e), call. = FALSE)
+    }
+  )
+}
+
+.lc_iso_time <- function(x = Sys.time()) {
+  value <- format(x, "%Y-%m-%dT%H:%M:%OS3%z", tz = "")
+  sub("([+-][0-9]{2})([0-9]{2})$", "\\1:\\2", value)
+}
+
+.lc_normalize_caption <- function(text) {
+  if (is.null(text) || !length(text)) return("")
+  text <- paste(as.character(text), collapse = " ")
+  text <- gsub("[[:space:]]+", " ", text)
+  trimws(text)
+}
+
+.lc_scalar_number <- function(x, default = NA_real_) {
+  if (is.null(x) || !length(x)) return(default)
+  value <- suppressWarnings(as.numeric(x[[1L]]))
+  if (!length(value) || is.na(value)) default else value
+}
+
+.lc_window_script <- function(include_caption = FALSE) {
+  include_caption_ps <- if (isTRUE(include_caption)) "$true" else "$false"
+
+  paste0(
+    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n",
+    "Add-Type -AssemblyName UIAutomationClient\n",
+    "Add-Type -AssemblyName UIAutomationTypes\n",
+    "$includeCaption = ", include_caption_ps, "\n",
+    "$root = [System.Windows.Automation.AutomationElement]::RootElement\n",
+    "$element = $null\n",
+    "$window = $null\n",
+    "$captionSource = 'none'\n",
+    "$captionAutomationId = ''\n",
+    "$captionIds = @('CaptionsTextBlock', 'CaptionTextBlock')\n",
+    "foreach ($captionId in $captionIds) {\n",
+    "  try {\n",
+    "    $idCondition = [System.Windows.Automation.PropertyCondition]::new(\n",
+    "      [System.Windows.Automation.AutomationElement]::AutomationIdProperty,\n",
+    "      $captionId\n",
+    "    )\n",
+    "    $element = $root.FindFirst(\n",
+    "      [System.Windows.Automation.TreeScope]::Descendants,\n",
+    "      $idCondition\n",
+    "    )\n",
+    "  } catch { $element = $null }\n",
+    "  if ($null -ne $element) {\n",
+    "    $captionSource = 'automation_id'\n",
+    "    $captionAutomationId = $captionId\n",
+    "    break\n",
+    "  }\n",
+    "}\n",
+    "if ($null -ne $element) {\n",
+    "  $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker\n",
+    "  $node = $element\n",
+    "  while ($null -ne $node) {\n",
+    "    try {\n",
+    "      if ([int64]$node.Current.NativeWindowHandle -ne 0) { $window = $node }\n",
+    "    } catch {}\n",
+    "    try { $parent = $walker.GetParent($node) } catch { $parent = $null }\n",
+    "    if ($null -eq $parent -or $parent -eq $root) { break }\n",
+    "    $node = $parent\n",
+    "  }\n",
+    "}\n",
+    "if ($null -eq $window) {\n",
+    "  $top = $root.FindAll(\n",
+    "    [System.Windows.Automation.TreeScope]::Children,\n",
+    "    [System.Windows.Automation.Condition]::TrueCondition\n",
+    "  )\n",
+    "  foreach ($candidate in $top) {\n",
+    "    try { $name = [string]$candidate.Current.Name } catch { continue }\n",
+    "    $matchesTitle = ($name -match '(?i)Live captions')\n",
+    "    $matchesProcess = $false\n",
+    "    try {\n",
+    "      $processId = [int]$candidate.Current.ProcessId\n",
+    "      $processName = ([System.Diagnostics.Process]::GetProcessById($processId)).ProcessName\n",
+    "      $matchesProcess = ($processName -match '(?i)LiveCaptions?')\n",
+    "    } catch {}\n",
+    "    if ($matchesTitle -or $matchesProcess) { $window = $candidate; break }\n",
+    "  }\n",
+    "}\n",
+    "if ($null -ne $window -and $null -eq $element) {\n",
+    "  try {\n",
+    "    $textCondition = [System.Windows.Automation.PropertyCondition]::new(\n",
+    "      [System.Windows.Automation.AutomationElement]::ControlTypeProperty,\n",
+    "      [System.Windows.Automation.ControlType]::Text\n",
+    "    )\n",
+    "    $textElements = $window.FindAll(\n",
+    "      [System.Windows.Automation.TreeScope]::Descendants,\n",
+    "      $textCondition\n",
+    "    )\n",
+    "    $best = $null\n",
+    "    $bestScore = -1\n",
+    "    foreach ($candidate in $textElements) {\n",
+    "      try {\n",
+    "        $candidateText = [string]$candidate.Current.Name\n",
+    "        $candidateId = [string]$candidate.Current.AutomationId\n",
+    "      } catch { continue }\n",
+    "      $score = $candidateText.Trim().Length\n",
+    "      if ($candidateId -match '(?i)caption.*text|text.*caption') {\n",
+    "        $score += 100000\n",
+    "      }\n",
+    "      if ($score -gt $bestScore) {\n",
+    "        $best = $candidate\n",
+    "        $bestScore = $score\n",
+    "        $captionAutomationId = $candidateId\n",
+    "      }\n",
+    "    }\n",
+    "    if ($null -ne $best) {\n",
+    "      $element = $best\n",
+    "      if ($captionAutomationId -match '(?i)caption.*text|text.*caption') {\n",
+    "        $captionSource = 'caption_like_automation_id'\n",
+    "      } else {\n",
+    "        $captionSource = 'longest_text'\n",
+    "      }\n",
+    "    }\n",
+    "  } catch {}\n",
+    "}\n",
+    "$running = ($null -ne $window)\n",
+    "$handle = 0\n",
+    "$title = ''\n",
+    "$x = $null; $y = $null; $width = $null; $height = $null\n",
+    "$isOffscreen = $false\n",
+    "if ($running) {\n",
+    "  try { $handle = [int64]$window.Current.NativeWindowHandle } catch {}\n",
+    "  try { $title = [string]$window.Current.Name } catch {}\n",
+    "  try {\n",
+    "    $rect = $window.Current.BoundingRectangle\n",
+    "    $x = [double]$rect.X; $y = [double]$rect.Y\n",
+    "    $width = [double]$rect.Width; $height = [double]$rect.Height\n",
+    "  } catch {}\n",
+    "  try { $isOffscreen = [bool]$window.Current.IsOffscreen } catch {}\n",
+    "}\n",
+    "$caption = ''\n",
+    "$textAccessible = ($null -ne $element)\n",
+    "if ($includeCaption -and $textAccessible) {\n",
+    "  try { $caption = [string]$element.Current.Name } catch { $textAccessible = $false }\n",
+    "}\n",
+    "[pscustomobject]@{\n",
+    "  running = $running\n",
+    "  handle = $handle\n",
+    "  title = $title\n",
+    "  x = $x\n",
+    "  y = $y\n",
+    "  width = $width\n",
+    "  height = $height\n",
+    "  is_offscreen = $isOffscreen\n",
+    "  text_accessible = $textAccessible\n",
+    "  caption_source = $captionSource\n",
+    "  caption_automation_id = $captionAutomationId\n",
+    "  caption = $caption\n",
+    "} | ConvertTo-Json -Compress\n"
+  )
+}
+
+.lc_probe_window <- function(include_caption = FALSE) {
+  if (!.lc_is_windows()) {
+    return(list(
+      running = FALSE,
+      handle = 0,
+      title = NA_character_,
+      x = NA_real_, y = NA_real_, width = NA_real_, height = NA_real_,
+      is_offscreen = FALSE,
+      text_accessible = FALSE,
+      caption_source = "none",
+      caption_automation_id = "",
+      caption = "",
+      error = NULL
+    ))
+  }
+
+  tryCatch(
+    {
+      result <- .lc_run_powershell(.lc_window_script(include_caption), timeout = 8)
+      parsed <- .lc_parse_json_output(result)
+      list(
+        running = isTRUE(parsed$running),
+        handle = .lc_scalar_number(parsed$handle, default = 0),
+        title = if (length(parsed$title) && nzchar(parsed$title)) parsed$title else NA_character_,
+        x = .lc_scalar_number(parsed$x),
+        y = .lc_scalar_number(parsed$y),
+        width = .lc_scalar_number(parsed$width),
+        height = .lc_scalar_number(parsed$height),
+        is_offscreen = isTRUE(parsed$is_offscreen),
+        text_accessible = isTRUE(parsed$text_accessible),
+        caption_source = if (is.null(parsed$caption_source)) "none" else as.character(parsed$caption_source),
+        caption_automation_id = if (is.null(parsed$caption_automation_id)) "" else as.character(parsed$caption_automation_id),
+        caption = if (is.null(parsed$caption)) "" else as.character(parsed$caption),
+        error = NULL
+      )
+    },
+    error = function(e) {
+      list(
+        running = FALSE,
+        handle = 0,
+        title = NA_character_,
+        x = NA_real_, y = NA_real_, width = NA_real_, height = NA_real_,
+        is_offscreen = FALSE,
+        text_accessible = FALSE,
+        caption_source = "none",
+        caption_automation_id = "",
+        caption = "",
+        error = conditionMessage(e)
+      )
+    }
+  )
+}
+
+.lc_send_toggle_shortcut <- function() {
+  code <- paste(
+    "Add-Type @'",
+    "using System;",
+    "using System.Runtime.InteropServices;",
+    "public static class LiveCaptionKeys {",
+    "  [DllImport(\"user32.dll\", SetLastError = true)]",
+    "  private static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);",
+    "  public static void Toggle() {",
+    "    const uint Up = 0x0002;",
+    "    keybd_event(0x5B, 0, 0, UIntPtr.Zero);",
+    "    keybd_event(0x11, 0, 0, UIntPtr.Zero);",
+    "    keybd_event(0x4C, 0, 0, UIntPtr.Zero);",
+    "    keybd_event(0x4C, 0, Up, UIntPtr.Zero);",
+    "    keybd_event(0x11, 0, Up, UIntPtr.Zero);",
+    "    keybd_event(0x5B, 0, Up, UIntPtr.Zero);",
+    "  }",
+    "}",
+    "'@",
+    "[LiveCaptionKeys]::Toggle()",
+    sep = "\n"
+  )
+  .lc_run_powershell(code, timeout = 5)
+  invisible(TRUE)
+}
+
+.lc_move_window <- function(handle, x, y, activate = FALSE) {
+  handle <- as.numeric(handle)
+  x <- as.integer(round(x))
+  y <- as.integer(round(y))
+
+  code <- paste0(
+    "Add-Type @'\n",
+    "using System;\n",
+    "using System.Runtime.InteropServices;\n",
+    "public static class LiveCaptionWindow {\n",
+    "  [DllImport(\"user32.dll\")]\n",
+    "  public static extern IntPtr GetAncestor(IntPtr h, uint flags);\n",
+    "  [DllImport(\"user32.dll\", SetLastError = true)]\n",
+    "  public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);\n",
+    "  [DllImport(\"user32.dll\")]\n",
+    "  public static extern bool ShowWindow(IntPtr h, int command);\n",
+    "  [DllImport(\"user32.dll\")]\n",
+    "  public static extern bool SetForegroundWindow(IntPtr h);\n",
+    "}\n",
+    "'@\n",
+    "$handle = [IntPtr]", format(handle, scientific = FALSE, trim = TRUE), "\n",
+    "$root = [LiveCaptionWindow]::GetAncestor($handle, 2)\n",
+    "if ($root -ne [IntPtr]::Zero) { $handle = $root }\n",
+    "$ok = [LiveCaptionWindow]::SetWindowPos(\n",
+    "  $handle, [IntPtr]::Zero, ", x, ", ", y, ", 0, 0, 0x0015\n",
+    ")\n",
+    if (isTRUE(activate)) {
+      "[LiveCaptionWindow]::ShowWindow($handle, 9) | Out-Null\n[LiveCaptionWindow]::SetForegroundWindow($handle) | Out-Null\n"
+    } else {
+      ""
+    },
+    "[pscustomobject]@{ success = $ok } | ConvertTo-Json -Compress\n"
+  )
+
+  result <- .lc_parse_json_output(.lc_run_powershell(code, timeout = 5))
+  isTRUE(result$success)
+}
+
+.lc_close_window <- function(handle) {
+  handle <- as.numeric(handle)
+
+  code <- paste0(
+    "Add-Type -AssemblyName UIAutomationClient\n",
+    "Add-Type -AssemblyName UIAutomationTypes\n",
+    "Add-Type @'\n",
+    "using System;\n",
+    "using System.Runtime.InteropServices;\n",
+    "public static class LiveCaptionClose {\n",
+    "  [DllImport(\"user32.dll\")]\n",
+    "  public static extern IntPtr GetAncestor(IntPtr h, uint flags);\n",
+    "  [DllImport(\"user32.dll\")]\n",
+    "  public static extern bool IsWindow(IntPtr h);\n",
+    "  [DllImport(\"user32.dll\", SetLastError = true)]\n",
+    "  public static extern bool PostMessage(IntPtr h, uint message, IntPtr wParam, IntPtr lParam);\n",
+    "}\n",
+    "'@\n",
+    "$handle = [IntPtr]", format(handle, scientific = FALSE, trim = TRUE), "\n",
+    "$root = [LiveCaptionClose]::GetAncestor($handle, 2)\n",
+    "if ($root -eq [IntPtr]::Zero) { $root = $handle }\n",
+    "$requested = $false\n",
+    "try {\n",
+    "  $element = [System.Windows.Automation.AutomationElement]::FromHandle($root)\n",
+    "  $pattern = $null\n",
+    "  if ($null -ne $element -and $element.TryGetCurrentPattern(\n",
+    "      [System.Windows.Automation.WindowPattern]::Pattern, [ref]$pattern)) {\n",
+    "    $pattern.Close()\n",
+    "    $requested = $true\n",
+    "  }\n",
+    "} catch {}\n",
+    "Start-Sleep -Milliseconds 150\n",
+    "if ([LiveCaptionClose]::IsWindow($root)) {\n",
+    "  $posted = [LiveCaptionClose]::PostMessage(\n",
+    "    $root, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero\n",
+    "  )\n",
+    "  $requested = ($requested -or $posted)\n",
+    "}\n",
+    "[pscustomobject]@{ success = $requested } | ConvertTo-Json -Compress\n"
+  )
+
+  result <- .lc_parse_json_output(.lc_run_powershell(code, timeout = 5))
+  isTRUE(result$success)
+}
+
+.lc_virtual_screen <- function() {
+  code <- paste(
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$rect = [System.Windows.Forms.SystemInformation]::VirtualScreen",
+    "[pscustomobject]@{ left=$rect.Left; top=$rect.Top; width=$rect.Width; height=$rect.Height } | ConvertTo-Json -Compress",
+    sep = "\n"
+  )
+  .lc_parse_json_output(.lc_run_powershell(code, timeout = 5))
+}

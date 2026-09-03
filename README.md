@@ -8,7 +8,7 @@ turns manually selected caption snapshots and the text added between them into
 ordinary R character strings, lists, and data frames that can be cleaned,
 analysed, translated, saved, or used in later subtitle workflows.
 
-Version 0.1.3 deliberately contains only the first dependable layer:
+Version 0.1.4 deliberately contains only the first dependable layer:
 
 - start, stop, inspect, hide, and show the Windows Live Captions window;
 - capture manually requested bookmarks;
@@ -43,6 +43,11 @@ GPL version 3 or later.
 - Windows 11 with Live Captions available;
 - Windows PowerShell 5.1 or later;
 - R 4.2 or later.
+
+The package does not bypass or replace the configured PowerShell execution
+policy. Its temporary local scripts inherit the effective policy set by
+Windows or by your organization. If that policy prevents the scripts from
+running, contact your system administrator rather than changing the policy.
 
 The R dependencies are installed automatically:
 
