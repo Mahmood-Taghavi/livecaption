@@ -8,12 +8,13 @@ turns manually selected caption snapshots and the text added between them into
 ordinary R character strings, lists, and data frames that can be cleaned,
 analysed, translated, saved, or used in later subtitle workflows.
 
-Version 0.1.4 deliberately contains only the first dependable layer:
+Version 0.1.8 deliberately contains only the first dependable layer:
 
-- start, stop, inspect, hide, and show the Windows Live Captions window;
+- start, stop, and inspect Windows Live Captions;
 - capture manually requested bookmarks;
 - retain bookmarks as numbered R objects for the current R session;
-- retrieve revised text added between two bookmarks.
+- retrieve revised text added between two bookmarks;
+- immediately retrieve or copy text added after an initialized baseline.
 
 ## What the package brings into R
 
@@ -22,6 +23,7 @@ convenient transcript for analysis. `livecaption` reads the accessible caption
 text and makes it available as normal R objects. For example, you can:
 
 - extract the current caption at meaningful moments;
+- capture text added after a user-initialized baseline;
 - isolate text added between two numbered bookmarks;
 - inspect bookmarks as a list or data frame;
 - copy long extracted text directly to the Windows clipboard;
@@ -95,29 +97,51 @@ Close it with:
 lc_app_stop()
 ```
 
-### Experimental corner hiding
+The package intentionally does not hide, show, move, or minimize the Live
+Captions window. Those actions were unreliable across Windows configurations.
+You can reposition or minimize the window manually when needed, although text
+accessibility while minimized depends on Windows and should be checked before
+relying on it.
+
+Inspect the window state programmatically:
 
 ```r
-lc_app_hide()                         # bottom-right corner
-lc_app_hide("top_left", 40)          # choose a corner and visible edge
-lc_app_status()
-lc_app_show()
+status <- lc_app_status()
+status[c("running", "visible", "hidden", "text_accessible")]
 ```
 
-`lc_app_hide()` records the window's location and first tries to park almost all
-of it beyond a selected corner of the virtual desktop. A small edge remains
-visible so the window can also be recovered with the mouse. If Windows rejects
-that position, the function parks the complete window snugly inside the same
-corner instead. It verifies both the new position and caption accessibility; if
-both placements fail, the original position is restored and an error is
-reported. Live Captions may need to be in floating mode before Windows allows
-this move.
+## Immediate capture from a baseline
 
-`lc_app_show()` restores the saved position. If the position is unavailable,
-it moves the window to the centre of the virtual desktop.
+Initialize the current visible caption as the starting baseline:
 
-This feature is experimental because Windows Live Captions may reposition
-itself depending on its floating, top, or bottom display mode.
+```r
+lc_capture_init()
+```
+
+After more captions appear, capture a fresh ending snapshot and return only the
+text added after the baseline:
+
+```r
+captured_text <- lc_capture_text()
+```
+
+Or capture a fresh ending snapshot and copy the result directly to the Windows
+clipboard:
+
+```r
+lc_capture_copy()
+```
+
+`lc_capture_text()` and `lc_capture_copy()` do not change the baseline and do
+not create bookmarks. Calling `lc_capture_init()` again replaces the baseline.
+If no baseline has been initialized, an empty dummy baseline is used, so the
+complete caption currently exposed by Live Captions is returned or copied.
+
+This is a two-snapshot operation. It can handle rolling-window overlap and
+recent corrections, but text that has already left the Live Captions window
+cannot be recovered when no overlap remains. In that case, the function warns
+that the result may be incomplete. For longer material, create intermediate
+bookmarks before text scrolls out of the caption window.
 
 ## Bookmarks
 
@@ -215,14 +239,14 @@ lc_app_status()
 test_bookmark <- lc_bookmark("Initial test")
 test_bookmark$caption
 
-lc_app_hide()
-lc_bookmark("Bookmark while hidden")
-lc_app_show()
+lc_capture_init()
+
+# Allow more captions to appear.
+captured_text <- lc_capture_text()
+lc_capture_copy()
+
 lc_app_stop()
 ```
-
-If hiding is rejected or makes the caption text inaccessible, leave the window
-visible and continue using the other functions.
 
 ## Caption-control troubleshooting
 

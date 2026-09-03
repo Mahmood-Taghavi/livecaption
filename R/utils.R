@@ -167,6 +167,10 @@
     "    $x = [double]$rect.X; $y = [double]$rect.Y\n",
     "    $width = [double]$rect.Width; $height = [double]$rect.Height\n",
     "  } catch {}\n",
+    "  if ($null -ne $x -and ([double]::IsNaN($x) -or [double]::IsInfinity($x))) { $x = $null }\n",
+    "  if ($null -ne $y -and ([double]::IsNaN($y) -or [double]::IsInfinity($y))) { $y = $null }\n",
+    "  if ($null -ne $width -and ([double]::IsNaN($width) -or [double]::IsInfinity($width))) { $width = $null }\n",
+    "  if ($null -ne $height -and ([double]::IsNaN($height) -or [double]::IsInfinity($height))) { $height = $null }\n",
     "  try { $isOffscreen = [bool]$window.Current.IsOffscreen } catch {}\n",
     "}\n",
     "$caption = ''\n",
@@ -270,44 +274,6 @@
   invisible(TRUE)
 }
 
-.lc_move_window <- function(handle, x, y, activate = FALSE) {
-  handle <- as.numeric(handle)
-  x <- as.integer(round(x))
-  y <- as.integer(round(y))
-
-  code <- paste0(
-    "Add-Type @'\n",
-    "using System;\n",
-    "using System.Runtime.InteropServices;\n",
-    "public static class LiveCaptionWindow {\n",
-    "  [DllImport(\"user32.dll\")]\n",
-    "  public static extern IntPtr GetAncestor(IntPtr h, uint flags);\n",
-    "  [DllImport(\"user32.dll\", SetLastError = true)]\n",
-    "  public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);\n",
-    "  [DllImport(\"user32.dll\")]\n",
-    "  public static extern bool ShowWindow(IntPtr h, int command);\n",
-    "  [DllImport(\"user32.dll\")]\n",
-    "  public static extern bool SetForegroundWindow(IntPtr h);\n",
-    "}\n",
-    "'@\n",
-    "$handle = [IntPtr]", format(handle, scientific = FALSE, trim = TRUE), "\n",
-    "$root = [LiveCaptionWindow]::GetAncestor($handle, 2)\n",
-    "if ($root -ne [IntPtr]::Zero) { $handle = $root }\n",
-    "$ok = [LiveCaptionWindow]::SetWindowPos(\n",
-    "  $handle, [IntPtr]::Zero, ", x, ", ", y, ", 0, 0, 0x0015\n",
-    ")\n",
-    if (isTRUE(activate)) {
-      "[LiveCaptionWindow]::ShowWindow($handle, 9) | Out-Null\n[LiveCaptionWindow]::SetForegroundWindow($handle) | Out-Null\n"
-    } else {
-      ""
-    },
-    "[pscustomobject]@{ success = $ok } | ConvertTo-Json -Compress\n"
-  )
-
-  result <- .lc_parse_json_output(.lc_run_powershell(code, timeout = 5))
-  isTRUE(result$success)
-}
-
 .lc_close_window <- function(handle) {
   handle <- as.numeric(handle)
 
@@ -351,14 +317,4 @@
 
   result <- .lc_parse_json_output(.lc_run_powershell(code, timeout = 5))
   isTRUE(result$success)
-}
-
-.lc_virtual_screen <- function() {
-  code <- paste(
-    "Add-Type -AssemblyName System.Windows.Forms",
-    "$rect = [System.Windows.Forms.SystemInformation]::VirtualScreen",
-    "[pscustomobject]@{ left=$rect.Left; top=$rect.Top; width=$rect.Width; height=$rect.Height } | ConvertTo-Json -Compress",
-    sep = "\n"
-  )
-  .lc_parse_json_output(.lc_run_powershell(code, timeout = 5))
 }

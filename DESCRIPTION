@@ -1,6 +1,6 @@
 Package: livecaption
 Title: Extract Windows Live Captions Text into R
-Version: 0.1.4
+Version: 0.1.8
 Authors@R: 
     person(
         given = "Seyed Mahmood",
@@ -10,11 +10,12 @@ Authors@R:
     )
 Description: Extracts text produced by Windows Live Captions and brings it into
     R for further processing, analysis, transformation, and export. Provides a
-    small Windows-only interface for starting, stopping, hiding, showing, and
-    inspecting Live Captions; captures manually requested bookmarks with ISO
-    8601 timestamps; and retrieves normalized, overlap-aware text between
-    numbered bookmarks. This early release intentionally excludes continuous
-    capture, recording, subtitle, and Shiny functionality.
+    small Windows-only interface for starting, stopping, and inspecting Live
+    Captions, captures manually requested bookmarks with ISO 8601 timestamps,
+    retrieves normalized overlap-aware text between numbered bookmarks, and
+    supports immediate text capture relative to a stored baseline. This early
+    release intentionally excludes continuous recording, subtitle, and Shiny
+    functionality.
 License: GPL (>= 3)
 URL: https://github.com/Mahmood-Taghavi/livecaption
 BugReports: https://github.com/Mahmood-Taghavi/livecaption/issues

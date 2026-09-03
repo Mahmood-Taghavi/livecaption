@@ -122,6 +122,7 @@ test_that("status is safe on non-Windows systems", {
   expect_s3_class(status, "lc_app_status")
   expect_false(status$supported)
   expect_false(status$running)
+  expect_false(status$hidden)
   expect_identical(status$caption_source, "none")
   expect_identical(status$caption_automation_id, "")
 })
@@ -131,17 +132,83 @@ test_that("caption probe contains the tolerant text-control fallback", {
   expect_match(script, "CaptionTextBlock", fixed = TRUE)
   expect_match(script, "longest_text", fixed = TRUE)
   expect_match(script, "LiveCaptions?", fixed = TRUE)
+  expect_match(script, "[double]::IsInfinity($x)", fixed = TRUE)
+})
+
+test_that("capture baselines have stable normalized structure", {
+  baseline <- livecaption:::.lc_make_capture_baseline(
+    "  alpha\n beta  ",
+    time = as.POSIXct("2026-09-03 12:34:56", tz = "UTC")
+  )
+
+  expect_s3_class(baseline, "lc_capture_baseline")
+  expect_identical(names(baseline), c("time", "caption"))
+  expect_identical(baseline$caption, "alpha beta")
+  expect_match(baseline$time, "^2026-09-03T12:34:56")
+})
+
+test_that("capture uses an empty dummy baseline when none was initialized", {
+  state <- livecaption:::.livecaption_state
+  old_baseline <- state$capture_baseline
+  on.exit(state$capture_baseline <- old_baseline, add = TRUE)
+
+  state$capture_baseline <- NULL
+  expect_identical(
+    livecaption:::.lc_capture_diff("complete current caption"),
+    "complete current caption"
+  )
+})
+
+test_that("capture returns overlap-aware text after the stored baseline", {
+  state <- livecaption:::.livecaption_state
+  old_baseline <- state$capture_baseline
+  on.exit(state$capture_baseline <- old_baseline, add = TRUE)
+
+  state$capture_baseline <- livecaption:::.lc_make_capture_baseline(
+    "alpha beta gamma"
+  )
+
+  expect_identical(
+    livecaption:::.lc_capture_diff("alpha beta gamma delta epsilon"),
+    "delta epsilon"
+  )
+  expect_identical(
+    livecaption:::.lc_capture_diff("gamma delta epsilon zeta"),
+    "delta epsilon zeta"
+  )
+  expect_identical(state$capture_baseline$caption, "alpha beta gamma")
+})
+
+test_that("capture warns when the ending snapshot no longer overlaps", {
+  state <- livecaption:::.livecaption_state
+  old_baseline <- state$capture_baseline
+  on.exit(state$capture_baseline <- old_baseline, add = TRUE)
+
+  state$capture_baseline <- livecaption:::.lc_make_capture_baseline(
+    "alpha beta"
+  )
+  expect_warning(
+    result <- livecaption:::.lc_capture_diff("entirely different words"),
+    "may be incomplete"
+  )
+  expect_identical(result, "entirely different words")
 })
 
 test_that("clipboard helper fails safely outside Windows", {
   skip_on_os("windows")
   expect_error(lc_bookmark_copy(), "requires Windows 11")
+  expect_error(lc_capture_copy(), "requires Windows 11")
 })
 
 test_that("application lifecycle uses only start and stop names", {
   namespace <- asNamespace("livecaption")
   expect_true(exists("lc_app_start", namespace, inherits = FALSE))
   expect_true(exists("lc_app_stop", namespace, inherits = FALSE))
+  expect_false(exists("lc_app_hide", namespace, inherits = FALSE))
+  expect_false(exists("lc_app_show", namespace, inherits = FALSE))
   expect_false(exists("lc_app_run", namespace, inherits = FALSE))
   expect_false(exists("lc_app_close", namespace, inherits = FALSE))
+  expect_true(exists("lc_capture_init", namespace, inherits = FALSE))
+  expect_true(exists("lc_capture_text", namespace, inherits = FALSE))
+  expect_true(exists("lc_capture_copy", namespace, inherits = FALSE))
 })
